@@ -1,0 +1,30 @@
+name: Source Cooperative
+
+on:
+  schedule:
+    # Nightly at 02:00 UTC; scheduled workflows run on the default branch.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  # Route AWS CLI/SDK requests through Source Cooperative's data proxy.
+  AWS_ENDPOINT_URL: https://data.source.coop
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Sign in to Source Cooperative as ocean-icechunks--sscofs-updates
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::ocean-icechunks--sscofs-updates:role/FullAccess
+          audience: ${{ env.AWS_ENDPOINT_URL }}
+          sts-endpoint: ${{ env.AWS_ENDPOINT_URL }}/.sts
+          aws-region: us-west-2
+
+      - name: List ocean-icechunks bucket
+        run: aws s3 ls s3://ocean-icechunks/
