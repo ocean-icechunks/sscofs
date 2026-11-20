@@ -1,4 +1,4 @@
-name: Copy virtual subchunks Icechunk to Source Cooperative (one time)
+name: Copy best Icechunk to Source Cooperative (one time)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       destination_prefix:
         description: Destination prefix within ocean-icechunks (use a fresh prefix for a new copy)
         required: true
-        default: sscofs/sscofs-icechunk-best-virtual-subchunks
+        default: sscofs/sscofs-icechunk-best
         type: string
       dry_run:
         description: Only inventory and preview the copy; do not upload
@@ -25,7 +25,7 @@ permissions:
 
 env:
   AWS_ENDPOINT_URL: https://data.source.coop
-  SOURCE: source:nextgen-dmac-cloud-ingest-cmorse-dev/sscofs/sscofs-icechunk-best-virtual-subchunks
+  SOURCE: source:nextgen-dmac-cloud-ingest-cmorse-dev/sscofs/sscofs-icechunk-best
   # Independent remotes keep Source Cooperative credentials away from AWS S3.
   RCLONE_CONFIG: /dev/null
   RCLONE_CONFIG_SOURCE_TYPE: s3
@@ -73,7 +73,7 @@ jobs:
           rclone lsjson "$SOURCE" --recursive --files-only --hash | jq -S 'sort_by(.Path)' > source-before.json
           jq -e 'length > 0' source-before.json > /dev/null
           {
-            echo '### One-time virtual subchunks Icechunk copy'
+            echo '### One-time Icechunk copy'
             echo "Source: \`$SOURCE\`"
             echo "Destination: \`s3://ocean-icechunks/$DESTINATION_PREFIX/\`"
             echo "Dry run: $DRY_RUN"
@@ -119,6 +119,6 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: virtual-subchunks-icechunk-source-inventory
+          name: best-icechunk-source-inventory
           path: source-*.json
           if-no-files-found: ignore
