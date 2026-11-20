@@ -1,0 +1,124 @@
+name: Copy virtual subchunks Icechunk to Source Cooperative (one time)
+
+on:
+  workflow_dispatch:
+    inputs:
+      destination_prefix:
+        description: Destination prefix within ocean-icechunks (use a fresh prefix for a new copy)
+        required: true
+        default: sscofs/sscofs-icechunk-best-virtual-subchunks
+        type: string
+      dry_run:
+        description: Only inventory and preview the copy; do not upload
+        required: true
+        default: true
+        type: boolean
+
+# Serialize attempts so two runs cannot write the same store concurrently.
+concurrency:
+  group: copy-best-icechunk
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_ENDPOINT_URL: https://data.source.coop
+  SOURCE: source:nextgen-dmac-cloud-ingest-cmorse-dev/sscofs/sscofs-icechunk-best-virtual-subchunks
+  # Independent remotes keep Source Cooperative credentials away from AWS S3.
+  RCLONE_CONFIG: /dev/null
+  RCLONE_CONFIG_SOURCE_TYPE: s3
+  RCLONE_CONFIG_SOURCE_PROVIDER: AWS
+  RCLONE_CONFIG_SOURCE_ENV_AUTH: "false"
+  RCLONE_CONFIG_SOURCE_REGION: us-east-1
+  RCLONE_CONFIG_SOURCE_ENDPOINT: https://s3.amazonaws.com
+  RCLONE_CONFIG_DEST_TYPE: s3
+  RCLONE_CONFIG_DEST_PROVIDER: Other
+  RCLONE_CONFIG_DEST_ENV_AUTH: "true"
+  RCLONE_CONFIG_DEST_ENDPOINT: https://data.source.coop
+  RCLONE_CONFIG_DEST_REGION: us-west-2
+  RCLONE_CONFIG_DEST_FORCE_PATH_STYLE: "true"
+  RCLONE_CONFIG_DEST_SIGN_ACCEPT_ENCODING: "false"
+  RCLONE_CONFIG_DEST_LIST_VERSION: "2"
+  RCLONE_CONFIG_DEST_NO_CHECK_BUCKET: "true"
+  RCLONE_CONFIG_DEST_UPLOAD_CUTOFF: "0"
+  RCLONE_CONFIG_DEST_CHUNK_SIZE: 64M
+  RCLONE_CONFIG_DEST_DISABLE_CHECKSUM: "true"
+  RCLONE_STREAMING_UPLOAD_CUTOFF: "0"
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      DESTINATION_PREFIX: ${{ inputs.destination_prefix }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rclone
+          rclone version
+
+      - name: Validate destination and inventory public source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$DESTINATION_PREFIX" =~ ^sscofs/[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*$ ]]; then
+            echo 'Destination must be a prefix under sscofs/, without a trailing slash.' >&2
+            exit 1
+          fi
+          echo "DESTINATION=dest:ocean-icechunks/$DESTINATION_PREFIX" >> "$GITHUB_ENV"
+          rclone lsjson "$SOURCE" --recursive --files-only --hash | jq -S 'sort_by(.Path)' > source-before.json
+          jq -e 'length > 0' source-before.json > /dev/null
+          {
+            echo '### One-time virtual subchunks Icechunk copy'
+            echo "Source: \`$SOURCE\`"
+            echo "Destination: \`s3://ocean-icechunks/$DESTINATION_PREFIX/\`"
+            echo "Dry run: $DRY_RUN"
+            jq -r '"Source objects: \(length); bytes: \(map(.Size) | add)"' source-before.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sign in to Source Cooperative as ocean-icechunks--sscofs-updates
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::ocean-icechunks--sscofs-updates:role/FullAccess
+          audience: ${{ env.AWS_ENDPOINT_URL }}
+          sts-endpoint: ${{ env.AWS_ENDPOINT_URL }}/.sts
+          aws-region: us-west-2
+
+      - name: Copy every Icechunk object unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          options=()
+          if [[ "$DRY_RUN" == true ]]; then
+            options+=(--dry-run)
+          fi
+          rclone copy "$SOURCE" "$DESTINATION" \
+            --immutable --transfers 4 --checkers 8 \
+            --retries 5 --low-level-retries 10 \
+            --stats 30s --stats-one-line "${options[@]}"
+
+      - name: Verify all destination bytes and check source stability
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No --one-way: extra objects in the destination also fail verification.
+          rclone check "$SOURCE" "$DESTINATION" --download --checkers 4
+          rclone lsjson "$SOURCE" --recursive --files-only --hash | jq -S 'sort_by(.Path)' > source-after.json
+          if ! cmp --silent source-before.json source-after.json; then
+            echo 'Source changed during the copy. Keep writers stopped and rerun against a fresh destination prefix.' >&2
+            exit 1
+          fi
+          echo 'Verified every object by downloading and comparing source and destination; source inventory unchanged.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save source inventory
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: virtual-subchunks-icechunk-source-inventory
+          path: source-*.json
+          if-no-files-found: ignore
